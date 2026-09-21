@@ -1,0 +1,10 @@
+{
+  "name": "tmux-agent-inbox",
+  "description": "Find and open OpenCode sessions that need attention across tmux panes.",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./tui": "./tui.ts"
+  }
+}
