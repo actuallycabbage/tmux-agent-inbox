@@ -16,12 +16,13 @@ import tempfile
 import termios
 import threading
 import time
+from urllib.parse import urlencode
 
 
 root = Path(__file__).resolve().parents[1]
 socket = str(Path(tempfile.gettempdir()) / "opencode" / f"oc-notify-check-{os.getpid()}.sock")
 state = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "tmux-opencode-notify" / hashlib.sha256(socket.encode()).hexdigest()[:16]
-fixture = attach_pid = master = watcher = None
+fixture = attach_pid = master = watcher = shell_job = None
 terminal = bytearray()
 
 
@@ -132,6 +133,30 @@ try:
     keys([b"\r"])
     wait_for("search survives live refresh", lambda: tmux("display-message", "-p", "-c", client, "#{session_name}") == "agent")
     print("PASS: the open picker refreshes window names and answered status automatically, preserving its search.")
+
+    shell_query = "?" + urlencode({"location[directory]": str(root)})
+    command = api("post", "/api/shell" + shell_query, {"command": "sleep 60", "metadata": {"sessionID": fixture}})["data"]
+    shell_job = command["id"]
+
+    def shell_state(status):
+        rows = json.loads((state / "snapshot.json").read_text())["rows"]
+        return next((row for row in rows if row["id"] == fixture and row["status"] == status), None)
+
+    wait_for("snapshot after command starts", lambda: json.loads((state / "snapshot.json").read_text())["updated"] > command["time"]["started"])
+    brief = shell_state("IDLE")
+    assert brief and not brief.get("shellCount") and not brief.get("shellStart"), brief
+    running_shell = wait_for("long-running shell appears", lambda: shell_state("SHELL"), seconds=45)
+    assert running_shell["shellCount"] == 1 and running_shell["shellStart"] == command["time"]["started"], running_shell
+    assert json.loads((state / "snapshot.json").read_text())["updated"] - command["time"]["started"] >= 30_000
+    popup_start = len(terminal)
+    keys([b"\x02", b"o", b"c"])
+    wait_for("shell activity in popup", lambda: b"1 shell" in terminal[popup_start:])
+    keys([b"\x1b"])
+    api("delete", "/api/shell/" + shell_job + shell_query)
+    shell_job = None
+    idle = wait_for("finished shell clears", lambda: shell_state("IDLE"))
+    assert not idle.get("shellCount") and not idle.get("shellStart"), idle
+    print("PASS: shell activity appears after 30 seconds and clears when the command ends.")
 except Exception:
     if master is not None:
         messages = tmux("show-messages", "-t", client)
@@ -152,6 +177,8 @@ finally:
         os.close(master)
     if attach_pid:
         os.waitpid(attach_pid, 0)
+    if shell_job:
+        api("delete", "/api/shell/" + shell_job + shell_query)
     if fixture:
         api("delete", "/api/session/" + fixture)
     if watcher:

@@ -18,6 +18,7 @@ import (
 const (
 	pollInterval = 5 * time.Second
 	bridgeTTL    = 20 * time.Second
+	shellDelay   = 30 * time.Second
 )
 
 type location struct {
@@ -42,6 +43,16 @@ type request struct {
 	SessionID string `json:"sessionID"`
 }
 
+type shell struct {
+	Status   string `json:"status"`
+	Metadata struct {
+		SessionID string `json:"sessionID"`
+	} `json:"metadata"`
+	Time struct {
+		Started int64 `json:"started"`
+	} `json:"time"`
+}
+
 type bridge struct {
 	Token    string   `json:"token"`
 	PID      int      `json:"pid"`
@@ -62,6 +73,8 @@ type row struct {
 	RequestIDs string `json:"requestIDs"`
 	Updated    int64  `json:"updated"`
 	Since      int64  `json:"since"`
+	ShellCount int    `json:"shellCount,omitempty"`
+	ShellStart int64  `json:"shellStart,omitempty"`
 	Bridge     string `json:"bridge,omitempty"`
 	Pane       string `json:"pane,omitempty"`
 	Target     string `json:"target,omitempty"`
@@ -193,7 +206,7 @@ func ownerFor(item session, sessions map[string]session, bridges []bridge) *brid
 	return nil
 }
 
-func makeRows(sessions map[string]session, active map[string]json.RawMessage, forms, permissions []request, bridges []bridge, previous []row, now int64) []row {
+func makeRows(sessions map[string]session, active map[string]json.RawMessage, forms, permissions []request, shells []shell, bridges []bridge, previous []row, now int64) []row {
 	old := make(map[string]row, len(previous))
 	for _, item := range previous {
 		old[item.ID] = item
@@ -206,11 +219,25 @@ func makeRows(sessions map[string]session, active map[string]json.RawMessage, fo
 	for _, item := range permissions {
 		approvals[item.SessionID] = append(approvals[item.SessionID], item.ID)
 	}
+	commands := make(map[string][]shell)
+	for _, command := range shells {
+		if command.Status != "running" || command.Metadata.SessionID == "" {
+			continue
+		}
+		// Suppress brief commands using each command's actual start time, so
+		// rapid successive commands never accumulate into long-running activity.
+		if command.Time.Started <= 0 || now-command.Time.Started < shellDelay.Milliseconds() {
+			continue
+		}
+		commands[command.Metadata.SessionID] = append(commands[command.Metadata.SessionID], command)
+	}
 	rows := make([]row, 0, len(sessions))
 	for _, item := range sessions {
 		owner := ownerFor(item, sessions, bridges)
 		_, running := active[item.ID]
-		unread := item.ParentID == "" && item.Time.Idle > item.Time.Viewed && now-item.Time.Idle < (24*time.Hour).Milliseconds()
+		// OpenCode retains unread timestamps after a tab or CLI closes. Only
+		// live pane registrations keep completed runs in this tmux inbox.
+		unread := owner != nil && item.ParentID == "" && item.Time.Idle > item.Time.Viewed && now-item.Time.Idle < (24*time.Hour).Milliseconds()
 		status := "IDLE"
 		// A pending question/permission can block a still-running drain. It
 		// takes priority over active; ordinary idle history is not attention.
@@ -221,6 +248,10 @@ func makeRows(sessions map[string]session, active map[string]json.RawMessage, fo
 			status = "QUESTION"
 		case running:
 			status = "RUNNING"
+		case len(commands[item.ID]) > 0:
+			// Background commands outlive the foreground drain reported by
+			// /session/active. An idle agent may still be awaiting their results.
+			status = "SHELL"
 		case unread && item.Outcome == "failed":
 			status = "ERROR"
 		case unread:
@@ -236,6 +267,12 @@ func makeRows(sessions map[string]session, active map[string]json.RawMessage, fo
 			Status: status, RequestIDs: strings.Join(ids, ","), Updated: item.Time.Updated,
 			Since: now, ParentID: item.ParentID,
 		}
+		for _, command := range commands[item.ID] {
+			if entry.ShellCount == 0 || command.Time.Started < entry.ShellStart {
+				entry.ShellStart = command.Time.Started
+			}
+			entry.ShellCount++
+		}
 		if entry.Title == "" {
 			entry.Title = item.ID
 		}
@@ -247,7 +284,7 @@ func makeRows(sessions map[string]session, active map[string]json.RawMessage, fo
 		}
 		rows = append(rows, entry)
 	}
-	priority := map[string]int{"PERMISSION": 0, "QUESTION": 1, "ERROR": 2, "REVIEW": 3, "RUNNING": 4, "IDLE": 5}
+	priority := map[string]int{"PERMISSION": 0, "QUESTION": 1, "ERROR": 2, "REVIEW": 3, "RUNNING": 4, "SHELL": 5, "IDLE": 6}
 	sort.Slice(rows, func(i, j int) bool {
 		a, b := rows[i], rows[j]
 		if a.Status != b.Status {
@@ -267,19 +304,21 @@ func waiting(item row) bool {
 }
 
 func summary(rows []row) string {
-	counts := [3]int{}
+	counts := [4]int{}
 	for _, item := range rows {
 		switch {
 		case waiting(item):
 			counts[0]++
 		case item.Status == "RUNNING":
 			counts[1]++
-		case item.Status == "REVIEW" || item.Status == "ERROR":
+		case item.Status == "SHELL":
 			counts[2]++
+		case item.Status == "REVIEW" || item.Status == "ERROR":
+			counts[3]++
 		}
 	}
 	var parts []string
-	for i, label := range []string{"waiting", "running", "review"} {
+	for i, label := range []string{"waiting", "running", "shell", "review"} {
 		if counts[i] > 0 {
 			parts = append(parts, fmt.Sprintf("%d %s", counts[i], label))
 		}

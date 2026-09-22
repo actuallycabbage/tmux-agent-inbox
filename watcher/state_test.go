@@ -34,7 +34,7 @@ func TestAttentionAndRecency(t *testing.T) {
 	active := map[string]json.RawMessage{"ses_permission": nil, "ses_question": nil, "ses_old": nil, "ses_new": nil}
 	forms := []request{{ID: "frm_1", SessionID: "ses_question"}}
 	permissions := []request{{ID: "per_1", SessionID: "ses_permission"}}
-	rows := makeRows(sessions, active, forms, permissions, nil, nil, now)
+	rows := makeRows(sessions, active, forms, permissions, nil, nil, nil, now)
 	want := []string{"ses_permission", "ses_question", "ses_new", "ses_old"}
 	if !reflect.DeepEqual(rowIDs(rows), want) {
 		t.Fatalf("state groups/newest-first: got %v, want %v", rowIDs(rows), want)
@@ -42,16 +42,16 @@ func TestAttentionAndRecency(t *testing.T) {
 	if summary(rows) != "OC: 2 waiting · 2 running" || len(newAlerts(rows, nil)) != 2 {
 		t.Fatalf("incorrect attention state: %v", rows)
 	}
-	later := makeRows(sessions, active, forms, permissions, nil, rows, now+5000)
+	later := makeRows(sessions, active, forms, permissions, nil, nil, rows, now+5000)
 	if len(newAlerts(later, rows)) != 0 || later[0].Since != rows[0].Since {
 		t.Fatal("unchanged requests must not notify again or reset waiting time")
 	}
 	permissions[0].ID = "per_2"
-	another := makeRows(sessions, active, forms, permissions, nil, rows, now+10000)
+	another := makeRows(sessions, active, forms, permissions, nil, nil, rows, now+10000)
 	if !reflect.DeepEqual(rowIDs(newAlerts(another, rows)), []string{"ses_permission"}) || another[0].Since != now+10000 {
 		t.Fatal("a new request in the same session must alert again")
 	}
-	answered := makeRows(sessions, active, nil, nil, nil, rows, now+15000)
+	answered := makeRows(sessions, active, nil, nil, nil, nil, rows, now+15000)
 	if summary(answered) != "OC: 4 running" {
 		t.Fatal("answering must clear waiting status even while the drain remains active")
 	}
@@ -89,14 +89,83 @@ func TestReviewAndEmptySummary(t *testing.T) {
 	old := testSession("ses_old", 1)
 	old.Time.Idle = now - (24 * time.Hour).Milliseconds() - 1
 	sessions := map[string]session{done.ID: done, failed.ID: failed, old.ID: old}
-	rows := makeRows(sessions, nil, nil, nil, nil, nil, now)
-	if !reflect.DeepEqual(rowIDs(rows), []string{"ses_failed", "ses_done"}) || summary(rows) != "OC: 2 review" {
-		t.Fatal("only recent, unviewed root completions should need review")
+	bridges := []bridge{{Pane: "%1", Sessions: []string{done.ID, failed.ID, old.ID}}}
+	rows := makeRows(sessions, nil, nil, nil, nil, bridges, nil, now)
+	if !reflect.DeepEqual(rowIDs(rows), []string{"ses_failed", "ses_done", "ses_old"}) || rows[2].Status != "IDLE" || summary(rows) != "OC: 2 review" {
+		t.Fatal("only recent, unviewed root completions in open tabs should need review")
+	}
+	for name, live := range map[string][]bridge{
+		"closed client": nil,
+		"closed tabs":   {{Pane: "%1", Sessions: []string{"ses_other"}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			closed := makeRows(sessions, nil, nil, nil, nil, live, rows, now+5000)
+			if len(closed) != 0 || summary(closed) != "" {
+				t.Fatalf("saved conversations must not retain review entries after closing: %+v", closed)
+			}
+		})
 	}
 	done.Time.Viewed = done.Time.Idle
-	rows = makeRows(map[string]session{done.ID: done}, nil, nil, nil, nil, nil, now)
-	if len(rows) != 0 || summary(rows) != "" || summary([]row{{Status: "IDLE"}}) != "" {
+	rows = makeRows(map[string]session{done.ID: done}, nil, nil, nil, nil, bridges, rows, now)
+	if len(rows) != 1 || rows[0].Status != "IDLE" || summary(rows) != "" {
 		t.Fatal("viewing clears review and zero-count indicators must disappear")
+	}
+}
+
+func TestShellActivity(t *testing.T) {
+	const now = int64(1_000_000)
+	item := testSession("ses_shell", now)
+	item.Time.Idle = now - 100
+	sessions := map[string]session{item.ID: item}
+	bridges := []bridge{{Pane: "%1", Sessions: []string{item.ID}}}
+	command := shell{Status: "running"}
+	command.Metadata.SessionID, command.Time.Started = item.ID, now-60_000
+	older, exited, unowned, recent := command, command, command, command
+	older.Time.Started = now - 120_000
+	exited.Status, exited.Time.Started = "exited", now-180_000
+	unowned.Metadata.SessionID = ""
+	recent.Time.Started = now - 5000
+	shells := []shell{command, older, exited, unowned, recent}
+	for _, test := range []struct {
+		status      string
+		active      map[string]json.RawMessage
+		forms       []request
+		permissions []request
+		summary     string
+	}{
+		{status: "SHELL", summary: "OC: 1 shell"},
+		{status: "RUNNING", active: map[string]json.RawMessage{item.ID: nil}, summary: "OC: 1 running"},
+		{status: "QUESTION", forms: []request{{ID: "frm_1", SessionID: item.ID}}, summary: "OC: 1 waiting"},
+		{status: "PERMISSION", permissions: []request{{ID: "per_1", SessionID: item.ID}}, summary: "OC: 1 waiting"},
+	} {
+		t.Run(test.status, func(t *testing.T) {
+			rows := makeRows(sessions, test.active, test.forms, test.permissions, shells, bridges, nil, now)
+			if len(rows) != 1 || rows[0].Status != test.status || rows[0].ShellCount != 2 || rows[0].ShellStart != older.Time.Started || summary(rows) != test.summary {
+				t.Fatalf("shell activity must preserve agent/input state and use the oldest live command: %+v", rows)
+			}
+			if test.status == "SHELL" && len(newAlerts(rows, nil)) != 0 {
+				t.Fatal("background work does not require user input")
+			}
+		})
+	}
+	var previous []row
+	recent.Time.Started = now
+	for _, age := range []int64{0, 29_999, 30_000} {
+		rows := makeRows(sessions, nil, nil, nil, []shell{recent}, bridges, previous, now+age)
+		want := "REVIEW"
+		count := 0
+		if age >= 30_000 {
+			want, count = "SHELL", 1
+		}
+		if len(rows) != 1 || rows[0].Status != want || rows[0].ShellCount != count || (count == 0 && rows[0].ShellStart != 0) {
+			t.Fatalf("shell activity at %dms: %+v", age, rows)
+		}
+		previous = rows
+	}
+	recent.Time.Started = now + 30_001
+	completed := makeRows(sessions, nil, nil, nil, []shell{exited, recent}, bridges, previous, now+30_001)
+	if len(completed) != 1 || completed[0].Status != "REVIEW" || completed[0].ShellCount != 0 || completed[0].ShellStart != 0 {
+		t.Fatalf("exited commands must stop masking the session's current state: %+v", completed)
 	}
 }
 

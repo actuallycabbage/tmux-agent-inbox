@@ -49,7 +49,7 @@ This adds the inbox indicator to `status-right` and uses **prefix → o** for in
 | Ctrl-R in the inbox | Refresh now |
 | Escape | Close the inbox or leave the shortcut menu |
 
-Search by session title, state, tmux address, or window name. Each row shows the session’s state, its tmux location, and its OpenCode title. A **new window** location means selecting the row will resume that OpenCode session in a new tmux window.
+Search by session title, state, tmux address, or window name. Each row shows the session’s state, its tmux location, its OpenCode title, and any shell activity. A **new window** location means selecting the row will resume that OpenCode session in a new tmux window.
 
 Sessions are grouped in the order below, with the most recently updated first in each group:
 
@@ -60,11 +60,14 @@ Sessions are grouped in the order below, with the most recently updated first in
 | `ERROR` | A failed run you haven’t viewed |
 | `REVIEW` | A completed or interrupted run you haven’t viewed |
 | `RUNNING` | Working |
+| `SHELL` | A background command is still running |
 | `IDLE` | Inactive, with no pending input or review indicator |
 
-Questions and permissions stay in the waiting queue until you answer or resolve them. Review indicators clear when you view the response in OpenCode, or after 24 hours.
+Questions and permissions stay in the waiting queue until you answer or resolve them. Review indicators clear when you view the response in OpenCode, close its last registered tab or client, or after 24 hours.
 
-The status bar summarises activity, for example `OC: 2 waiting · 3 running · 1 review`. It shows only non-zero counts and disappears when there’s nothing to report. New questions and permission requests also display a brief tmux message.
+The activity column shows long-running commands, with a count and the elapsed time of the oldest command.
+
+The status bar summarises sessions, for example `OC: 2 waiting · 3 running · 1 shell · 1 review`. It shows only non-zero counts and disappears when there’s nothing to report. New questions and permission requests also display a brief tmux message.
 
 ## How it works
 
@@ -72,7 +75,7 @@ A Go watcher checks the local OpenCode service every five seconds. A small plugi
 
 There is one watcher per tmux server. It starts automatically, continues while tmux sessions are detached, and exits with the tmux server. The plugin runs inside OpenCode; the helper is a standalone binary.
 
-The inbox covers running sessions, pending input, and sessions open in registered panes. Completed runs remain available for review as the watcher observes them. Private `--standalone` servers, remote servers, and `mini` clients are outside its scope.
+The inbox covers running sessions, pending input, and sessions open in registered panes. Completed runs remain available for review while open in a registered pane. Private `--standalone` servers, remote servers, and `mini` clients are outside its scope.
 
 ## Troubleshooting
 

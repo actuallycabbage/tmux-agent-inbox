@@ -69,15 +69,26 @@ func lines(rows []row) string {
 		if window == "" {
 			window = "—"
 		}
-		age := ""
+		activity := ""
 		if waiting(item) {
 			minutes := (time.Now().UnixMilli() - item.Since) / 60_000
-			age = "now"
+			activity = "waiting now"
 			if minutes > 0 {
-				age = fmt.Sprintf("%dm", minutes)
+				activity = fmt.Sprintf("waiting %dm", minutes)
 			}
 		}
-		fmt.Fprintf(&output, "%s\t%-10s\t%-20s\t%-22s\t%s\t%s\n", item.ID, item.Status, clean(target), clean(window), clean(title), age)
+		if item.ShellCount > 0 {
+			if activity != "" {
+				activity += " · "
+			}
+			label := "shell"
+			if item.ShellCount > 1 {
+				label = "shells"
+			}
+			elapsed := max(time.Duration(0), time.Since(time.UnixMilli(item.ShellStart)).Truncate(time.Second))
+			activity += fmt.Sprintf("%d %s · %s", item.ShellCount, label, elapsed)
+		}
+		fmt.Fprintf(&output, "%s\t%-10s\t%-20s\t%-22s\t%s\t%s\n", item.ID, item.Status, clean(target), clean(window), clean(title), activity)
 	}
 	return output.String()
 }
@@ -212,7 +223,7 @@ func (app *application) configure() error {
 
 func (app *application) pick(state snapshot, client string) error {
 	reload := shellQuote(app.executable) + " list"
-	columns := fmt.Sprintf("%-10s\t%-20s\t%-22s\t%s", "STATE", "TMUX PANE", "TMUX WINDOW", "OPENCODE SESSION")
+	columns := fmt.Sprintf("%-10s\t%-20s\t%-22s\t%s\t%s", "STATE", "TMUX PANE", "TMUX WINDOW", "OPENCODE SESSION", "ACTIVITY")
 	// reload-sync keeps the old list usable during the delay. fzf owns the
 	// reload child and cancels it when the popup closes; no timer daemon.
 	cmd := exec.Command("fzf", "--layout=reverse", "--no-sort", "--track", "--wrap", "--delimiter=\t", "--with-nth=2..", "--nth=2..",

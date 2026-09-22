@@ -67,11 +67,25 @@ func TestSnapshotRecovery(t *testing.T) {
 			result = envelope[[]request]{Data: forms}
 		case "/api/permission/request":
 			result = envelope[[]request]{Data: []request{}}
+		case "/api/shell":
+			commands := []shell{}
+			if r.URL.Query().Get("location[directory]") == "/two" {
+				command := shell{Status: "running"}
+				command.Metadata.SessionID, command.Time.Started = "ses_shell", 123
+				exited, unowned := command, command
+				exited.Status, exited.Metadata.SessionID = "exited", "ses_exited"
+				unowned.Metadata.SessionID = ""
+				commands = append(commands, command, exited, unowned)
+			}
+			result = envelope[[]shell]{Data: commands}
 		case "/api/session/ses_deleted":
 			w.WriteHeader(http.StatusNotFound)
 			return
 		default:
 			id := strings.TrimPrefix(r.URL.Path, "/api/session/")
+			if id == "" || id == "ses_exited" {
+				t.Errorf("unowned/exited commands must not cause session lookups: %q", id)
+			}
 			item := testSession(id, 1)
 			if id == "ses_child" {
 				item.ParentID = "ses_root"
@@ -87,8 +101,11 @@ func TestSnapshotRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !seenSpace || len(rows) != 3 || rows[0].ID != "ses_child" || rows[0].Status != "QUESTION" || rows[0].Pane != "%1" {
+	if !seenSpace || len(rows) != 4 || rows[0].ID != "ses_child" || rows[0].Status != "QUESTION" || rows[0].Pane != "%1" {
 		t.Fatalf("pre-existing pending request/parent mapping was not recovered: %+v", rows)
+	}
+	if rows[2].ID != "ses_shell" || rows[2].Status != "SHELL" || rows[2].ShellCount != 1 || rows[2].ShellStart != 123 {
+		t.Fatalf("background commands must recover sessions absent from the active list and pane registrations: %+v", rows)
 	}
 	server.Close()
 	if _, err := service.snapshot(context.Background(), bridges, rows); err == nil {

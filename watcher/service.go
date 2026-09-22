@@ -110,22 +110,31 @@ func (service *api) snapshot(ctx context.Context, bridges []bridge, previous []r
 		return nil, errors.New("OpenCode returned invalid active-session/location data")
 	}
 	var forms, permissions []request
+	var shells []shell
 	// Full pending snapshots recover requests created before startup and
 	// during disconnections. Missing data must not become a false zero count.
 	for _, location := range locations {
 		query := url.Values{"location[directory]": {location.Directory}}.Encode()
 		var questions, approvals envelope[[]request]
+		var commands envelope[[]shell]
 		if err := service.get(ctx, "/api/form?"+query, &questions); err != nil {
 			return nil, err
 		}
 		if err := service.get(ctx, "/api/permission/request?"+query, &approvals); err != nil {
 			return nil, err
 		}
+		if err := service.get(ctx, "/api/shell?"+query, &commands); err != nil {
+			return nil, err
+		}
 		if questions.Data == nil || approvals.Data == nil {
 			return nil, errors.New("OpenCode returned invalid pending-request data")
 		}
+		if commands.Data == nil {
+			return nil, errors.New("OpenCode returned invalid running-shell data")
+		}
 		forms = append(forms, questions.Data...)
 		permissions = append(permissions, approvals.Data...)
+		shells = append(shells, commands.Data...)
 	}
 	ids := make(map[string]bool)
 	for id := range active.Data {
@@ -133,6 +142,13 @@ func (service *api) snapshot(ctx context.Context, bridges []bridge, previous []r
 	}
 	for _, item := range append(append([]request{}, forms...), permissions...) {
 		ids[item.SessionID] = true
+	}
+	for _, command := range shells {
+		// The shared service can run commands from several sessions in one
+		// directory. Only explicit session metadata establishes ownership.
+		if command.Status == "running" && command.Metadata.SessionID != "" {
+			ids[command.Metadata.SessionID] = true
+		}
 	}
 	for _, bridge := range bridges {
 		for _, id := range bridge.Sessions {
@@ -168,5 +184,5 @@ func (service *api) snapshot(ctx context.Context, bridges []bridge, previous []r
 			queue = append(queue, item.ParentID)
 		}
 	}
-	return makeRows(sessions, active.Data, forms, permissions, bridges, previous, time.Now().UnixMilli()), nil
+	return makeRows(sessions, active.Data, forms, permissions, shells, bridges, previous, time.Now().UnixMilli()), nil
 }
