@@ -1,4 +1,4 @@
-package main
+package inbox
 
 import (
 	"encoding/json"
@@ -39,7 +39,7 @@ func TestAttentionAndRecency(t *testing.T) {
 	if !reflect.DeepEqual(rowIDs(rows), want) {
 		t.Fatalf("state groups/newest-first: got %v, want %v", rowIDs(rows), want)
 	}
-	if summary(rows) != "OC: 2 waiting · 2 running" || len(newAlerts(rows, nil)) != 2 {
+	if summary(rows) != "#[fg=cyan] 2#[default]  #[fg=yellow] 1#[default]  #[fg=yellow] 1#[default]" || len(newAlerts(rows, nil)) != 2 {
 		t.Fatalf("incorrect attention state: %v", rows)
 	}
 	later := makeRows(sessions, active, forms, permissions, nil, nil, rows, now+5000)
@@ -52,7 +52,7 @@ func TestAttentionAndRecency(t *testing.T) {
 		t.Fatal("a new request in the same session must alert again")
 	}
 	answered := makeRows(sessions, active, nil, nil, nil, nil, rows, now+15000)
-	if summary(answered) != "OC: 4 running" {
+	if summary(answered) != "#[fg=cyan] 4#[default]" {
 		t.Fatal("answering must clear waiting status even while the drain remains active")
 	}
 }
@@ -91,7 +91,7 @@ func TestReviewAndEmptySummary(t *testing.T) {
 	sessions := map[string]session{done.ID: done, failed.ID: failed, old.ID: old}
 	bridges := []bridge{{Pane: "%1", Sessions: []string{done.ID, failed.ID, old.ID}}}
 	rows := makeRows(sessions, nil, nil, nil, nil, bridges, nil, now)
-	if !reflect.DeepEqual(rowIDs(rows), []string{"ses_failed", "ses_done", "ses_old"}) || rows[2].Status != "IDLE" || summary(rows) != "OC: 2 review" {
+	if !reflect.DeepEqual(rowIDs(rows), []string{"ses_failed", "ses_done", "ses_old"}) || rows[2].Status != "IDLE" || summary(rows) != "#[fg=green] 1#[default]  #[fg=red] 1#[default]" {
 		t.Fatal("only recent, unviewed root completions in open tabs should need review")
 	}
 	for name, live := range map[string][]bridge{
@@ -133,10 +133,10 @@ func TestShellActivity(t *testing.T) {
 		permissions []request
 		summary     string
 	}{
-		{status: "SHELL", summary: "OC: 1 shell"},
-		{status: "RUNNING", active: map[string]json.RawMessage{item.ID: nil}, summary: "OC: 1 running"},
-		{status: "QUESTION", forms: []request{{ID: "frm_1", SessionID: item.ID}}, summary: "OC: 1 waiting"},
-		{status: "PERMISSION", permissions: []request{{ID: "per_1", SessionID: item.ID}}, summary: "OC: 1 waiting"},
+		{status: "SHELL", summary: "#[fg=cyan] 1#[default]"},
+		{status: "RUNNING", active: map[string]json.RawMessage{item.ID: nil}, summary: "#[fg=cyan] 1#[default]"},
+		{status: "QUESTION", forms: []request{{ID: "frm_1", SessionID: item.ID}}, summary: "#[fg=yellow] 1#[default]"},
+		{status: "PERMISSION", permissions: []request{{ID: "per_1", SessionID: item.ID}}, summary: "#[fg=yellow] 1#[default]"},
 	} {
 		t.Run(test.status, func(t *testing.T) {
 			rows := makeRows(sessions, test.active, test.forms, test.permissions, shells, bridges, nil, now)

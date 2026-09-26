@@ -1,4 +1,4 @@
-package main
+package inbox
 
 import (
 	"bytes"
@@ -192,7 +192,7 @@ func (app *application) configure() error {
 			status = status[index+len(end):]
 		}
 	}
-	fragment := "#[fg=yellow]#(" + run + " status) #[default]"
+	fragment := "#(" + run + " status) #[default]"
 	for _, args := range [][]string{
 		{"set-option", "-g", "status-right", fragment + status},
 		{"set-option", "-g", "@opencode-notify-format", fragment},
@@ -269,13 +269,13 @@ func (app *application) run(command, client string) error {
 		var state snapshot
 		if err := readJSON(filepath.Join(app.directory, "snapshot.json"), &state); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
-				fmt.Println("OC: starting")
+				fmt.Println("#[fg=cyan] starting#[default]")
 				return nil
 			}
 			return err
 		}
 		if state.Error != "" || time.Now().UnixMilli()-state.Updated > (4*pollInterval).Milliseconds() {
-			fmt.Println("OC: offline")
+			fmt.Println("#[fg=red] offline#[default]")
 		} else {
 			fmt.Println(summary(state.Rows))
 		}
@@ -335,13 +335,14 @@ func (app *application) run(command, client string) error {
 	}
 }
 
-func main() {
+// Run executes an inbox command and returns its process exit code.
+func Run(args []string) int {
 	command, client := "help", ""
-	if len(os.Args) > 1 {
-		command = os.Args[1]
+	if len(args) > 0 {
+		command = args[0]
 	}
-	if len(os.Args) > 2 {
-		client = os.Args[2]
+	if len(args) > 1 {
+		client = args[1]
 	}
 	if command == "help" || command == "--help" || command == "-h" {
 		fmt.Print(`Agent Inbox — find and open OpenCode sessions across tmux panes.
@@ -360,7 +361,7 @@ Commands:
 Run commands inside tmux. The watcher normally starts automatically.
 See README.md for installation and keyboard shortcuts.
 `)
-		return
+		return 0
 	}
 	app := &application{socket: os.Getenv("OC_TMUX_SOCKET")}
 	if app.socket == "" {
@@ -380,14 +381,15 @@ See README.md for installation and keyboard shortcuts.
 	}
 	if err != nil {
 		if command == "status" {
-			fmt.Println("OC: offline")
-			return
+			fmt.Println("#[fg=red] offline#[default]")
+			return 0
 		}
 		message := clean(err.Error())
 		fmt.Fprintln(os.Stderr, message)
 		if client != "" && app.socket != "" {
 			_, _ = app.tmux("display-message", "-c", client, "-d", "5000", "-l", "Agent Inbox: "+message)
 		}
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }

@@ -1,7 +1,7 @@
 .PHONY: build test integration
 
 build:
-	go -C watcher build -trimpath -o ../bin/oc-tmux .
+	go -C watcher build -trimpath -o ../bin/oc-tmux ./cmd/oc-tmux
 
 test:
 	go -C watcher test -race ./...

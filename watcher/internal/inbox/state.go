@@ -1,4 +1,4 @@
-package main
+package inbox
 
 import (
 	"bytes"
@@ -304,29 +304,26 @@ func waiting(item row) bool {
 }
 
 func summary(rows []row) string {
-	counts := [4]int{}
+	counts := make(map[string]int)
 	for _, item := range rows {
-		switch {
-		case waiting(item):
-			counts[0]++
-		case item.Status == "RUNNING":
-			counts[1]++
-		case item.Status == "SHELL":
-			counts[2]++
-		case item.Status == "REVIEW" || item.Status == "ERROR":
-			counts[3]++
-		}
+		counts[item.Status]++
 	}
 	var parts []string
-	for i, label := range []string{"waiting", "running", "shell", "review"} {
-		if counts[i] > 0 {
-			parts = append(parts, fmt.Sprintf("%d %s", counts[i], label))
+	for _, state := range []struct{ status, icon, colour string }{
+		{"RUNNING", "", "cyan"},
+		{"SHELL", "", "cyan"},
+		{"QUESTION", "", "yellow"},
+		{"PERMISSION", "", "yellow"},
+		{"REVIEW", "", "green"},
+		{"ERROR", "", "red"},
+	} {
+		if count := counts[state.status]; count > 0 {
+			// tmux parses styles in status-command output. Reset each segment
+			// so its colour cannot leak into the rest of the user's status bar.
+			parts = append(parts, fmt.Sprintf("#[fg=%s]%s %d#[default]", state.colour, state.icon, count))
 		}
 	}
-	if len(parts) == 0 {
-		return ""
-	}
-	return "OC: " + strings.Join(parts, " · ")
+	return strings.Join(parts, "  ")
 }
 
 func newAlerts(rows, previous []row) []row {
